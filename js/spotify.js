@@ -13,6 +13,7 @@ import {
   buffers,
   themePalette,
   trackState,
+  lyricsState,
   dsp,
   animState,
   rgbToHsl,
@@ -23,6 +24,10 @@ import {
   applyVibeVisualBlend,
   triggerTrackTitleEntrance,
 } from './state.js';
+import {
+  fetchLyricsForTrack,
+  clearLyricsState,
+} from './lyrics.js';
 
 const APP_CONFIG = window.APP_CONFIG || {};
 export const SPOTIFY_CLIENT_ID = (APP_CONFIG.SPOTIFY_CLIENT_ID || '').trim();
@@ -448,6 +453,13 @@ function setAlbumBackdropActive(active) {
     duration: 1.4,
     ease: 'power2.inOut',
   });
+  if (lyricsState.hasSynced) {
+    gsapApi.to(lyricsState, {
+      blockAlpha: active ? 1 : 0.68,
+      duration: 0.8,
+      ease: 'power2.out',
+    });
+  }
 }
 
 export function clearSpotifySession() {
@@ -460,12 +472,21 @@ export function clearSpotifySession() {
   trackState.trackName = '';
   trackState.artistName = '';
   trackState.albumName = '';
+  trackState.rawTrackName = '';
+  trackState.rawArtistName = '';
+  trackState.primaryArtistName = '';
+  trackState.rawAlbumName = '';
+  trackState.durationMs = 0;
+  trackState.baseProgressMs = 0;
+  trackState.lastProgressSyncPerf = 0;
+  trackState.liveProgressMs = 0;
   trackState.albumArtUrl = '';
   trackState.albumImg = null;
   trackState.prevAlbumImg = null;
   trackState.hasAlbumBackdrop = false;
   trackState.metadataBiasVibe = null;
   themePalette.lockedToAlbum = false;
+  clearLyricsState();
 
   gsapApi.to(animState.backdrop, {
     albumVisibility: 0,
@@ -646,6 +667,13 @@ export async function controlSpotifyPlayback(action) {
 
     if (res.ok || res.status === 204) {
       if (action === 'toggle') {
+        // Anchor interpolated progress at the exact instant of play/pause toggle
+        const nowPerf = performance.now();
+        if (trackState.isPlaying) {
+          trackState.baseProgressMs =
+            trackState.baseProgressMs + Math.max(0, nowPerf - trackState.lastProgressSyncPerf);
+        }
+        trackState.lastProgressSyncPerf = nowPerf;
         trackState.isPlaying = !trackState.isPlaying;
         setAlbumBackdropActive(trackState.isPlaying);
       }
@@ -671,7 +699,17 @@ async function onNewTrackStarted(albumArtUrl) {
     applyVibeVisualBlend(getEffectiveVibe());
   }
 
-  // 2. Animate Live Track Title & Artist entrance
+  // 2. Fetch synced LRCLIB lyrics in parallel (non-blocking)
+  fetchLyricsForTrack({
+    trackId: trackIdAtStart,
+    trackName: trackState.rawTrackName,
+    primaryArtist: trackState.primaryArtistName,
+    artistName: trackState.rawArtistName,
+    albumName: trackState.rawAlbumName,
+    durationMs: trackState.durationMs,
+  });
+
+  // 3. Animate Live Track Title & Artist entrance
   triggerTrackTitleEntrance();
 
   // 3. Load album art, bake blurred backdrop, animate 3D card & morph palette
@@ -747,22 +785,49 @@ export async function pollSpotifyCurrentlyPlaying(forceImmediate = false) {
     }
 
     const nowPlaying = Boolean(payload.is_playing);
+    const item = payload.item;
+    const newTrackId = item.id || `${item.name}-${item.duration_ms}`;
+    const polledProgress = Math.max(0, Number(payload.progress_ms || 0));
+    const syncPerf = performance.now();
+
+    trackState.durationMs = Math.max(0, Number(item.duration_ms || 0));
+
+    // Synchronize 60 FPS local playback timer with Spotify's `progress_ms`
+    if (newTrackId !== trackState.currentTrackId || !nowPlaying || !trackState.isPlaying) {
+      trackState.baseProgressMs = polledProgress;
+      trackState.lastProgressSyncPerf = syncPerf;
+      trackState.liveProgressMs = polledProgress;
+    } else {
+      const predicted =
+        trackState.baseProgressMs + Math.max(0, syncPerf - trackState.lastProgressSyncPerf);
+      const drift = polledProgress - predicted;
+      // Snap immediately if user scrubbed (> 380ms), else gently converge without jitter
+      trackState.baseProgressMs =
+        Math.abs(drift) > 380 ? polledProgress : predicted + drift * 0.45;
+      trackState.lastProgressSyncPerf = syncPerf;
+    }
+
     if (nowPlaying !== trackState.isPlaying) {
       trackState.isPlaying = nowPlaying;
       setAlbumBackdropActive(nowPlaying);
     }
 
-    const item = payload.item;
-    const newTrackId = item.id || `${item.name}-${item.duration_ms}`;
-
     // STRICT 1-SONG-1-VIBE LOCK: Only trigger on brand-new track ID
     if (newTrackId !== trackState.currentTrackId) {
       trackState.currentTrackId = newTrackId;
-      trackState.trackName = (item.name || 'UNKNOWN TRACK').toUpperCase();
-      trackState.artistName = Array.isArray(item.artists)
-        ? item.artists.map((a) => a.name).join(', ').toUpperCase()
-        : 'UNKNOWN ARTIST';
-      trackState.albumName = item.album && item.album.name ? item.album.name.toUpperCase() : '';
+      trackState.rawTrackName = item.name || '';
+      trackState.primaryArtistName =
+        Array.isArray(item.artists) && item.artists[0] && item.artists[0].name
+          ? item.artists[0].name
+          : '';
+      trackState.rawArtistName = Array.isArray(item.artists)
+        ? item.artists.map((a) => a.name).join(', ')
+        : '';
+      trackState.rawAlbumName = item.album && item.album.name ? item.album.name : '';
+
+      trackState.trackName = (trackState.rawTrackName || 'UNKNOWN TRACK').toUpperCase();
+      trackState.artistName = (trackState.rawArtistName || 'UNKNOWN ARTIST').toUpperCase();
+      trackState.albumName = trackState.rawAlbumName.toUpperCase();
 
       const images = item.album && Array.isArray(item.album.images) ? item.album.images : [];
       const newArtUrl = images.length > 0 ? images[0].url : '';

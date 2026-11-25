@@ -148,6 +148,15 @@ export const trackState = {
   trackName: '',
   artistName: '',
   albumName: '',
+  rawTrackName: '',
+  rawArtistName: '',
+  primaryArtistName: '',
+  rawAlbumName: '',
+  durationMs: 0,
+  baseProgressMs: 0,
+  lastProgressSyncPerf: 0,
+  liveProgressMs: 0,
+  vibe: 'AMBIENT',
   albumArtUrl: '',
   albumImg: null,
   prevAlbumImg: null,
@@ -155,6 +164,21 @@ export const trackState = {
   pendingTrackLock: false,
   trackChangeTime: 0,
   metadataBiasVibe: null,
+};
+
+export const lyricsState = {
+  trackId: null,
+  lines: [],
+  activeIndex: -1,
+  hasSynced: false,
+  instrumental: false,
+  plainText: '',
+  loading: false,
+  blockAlpha: 0,
+  slideY: 0,
+  activeScale: 1,
+  activeGlow: 0,
+  lineFade: 1,
 };
 
 export const panel = {
@@ -234,7 +258,7 @@ export const dsp = {
   lastRhythmTime: 0,
   dominantHz: 0,
   dominantNote: '--',
-  vibe: 'ANTHEM',             // 'ANTHEM' | 'EDM' | 'HIPHOP' | 'SLOW' | 'ACOUSTIC' | 'AMBIENT'
+  vibe: 'AMBIENT',            // 'ANTHEM' | 'EDM' | 'HIPHOP' | 'SLOW' | 'ACOUSTIC' | 'AMBIENT'
   silenceStart: 0,
   awaitingFallbackSongLock: true,
   fallbackAnalyzeReadyAt: 0,
@@ -245,6 +269,7 @@ export const animState = {
   fontsReady: false,
   autoVibeEnabled: true,
   lockedVibeIndex: 0,
+  motionIntensity: 0.28,      // Vibe-calibrated motion scaling (0.28 SLOW/AMBIENT, 0.55 ACOUSTIC, 1.0+ EDM/ANTHEM/HIPHOP)
   clockMode: false,
   clockBlend: 0,
   showGlassFrame: true,
@@ -561,17 +586,68 @@ export function getFormattedClock() {
   return { hh, mm, ss, dateStr };
 }
 
+export function getVibeTargetMotionIntensity(vibe) {
+  switch (vibe) {
+    case 'SLOW':
+    case 'AMBIENT':
+      return 0.28;
+    case 'ACOUSTIC':
+      return 0.55;
+    case 'HIPHOP':
+      return 1.0;
+    case 'ANTHEM':
+      return 1.12;
+    case 'EDM':
+      return 1.22;
+    default:
+      return 0.85;
+  }
+}
+
+/**
+ * Derived vibe-calibrated restraint curves:
+ * - At `motionIntensity = 0.28` ('SLOW'/'AMBIENT'): 30% particles, 0.5x drift speed, 0.4x wave/ripple (-60%).
+ * - At `motionIntensity = 0.55` ('ACOUSTIC'): 56% particles, 0.69x drift speed, 0.63x wave/ripple.
+ * - At `motionIntensity >= 1.0` ('ANTHEM'/'EDM'/'HIPHOP'): 100% particles, 1.0x+ speed & full dynamic punch.
+ */
+export function getParticleDensityScale(mi = animState.motionIntensity) {
+  return Math.min(1, Math.max(0.3, 0.3 + ((mi - 0.28) / 0.72) * 0.7));
+}
+
+export function getDriftSpeedScale(mi = animState.motionIntensity) {
+  if (mi <= 1) {
+    return Math.max(0.5, 0.5 + ((mi - 0.28) / 0.72) * 0.5);
+  }
+  return 1 + (mi - 1) * 1.35;
+}
+
+export function getWaveAndRippleScale(mi = animState.motionIntensity) {
+  if (mi <= 1) {
+    return Math.max(0.4, 0.4 + ((mi - 0.28) / 0.72) * 0.6);
+  }
+  return 1 + (mi - 1) * 0.95;
+}
+
 export function getEffectiveVibe() {
-  return animState.autoVibeEnabled ? dsp.vibe : VIBES[animState.lockedVibeIndex].id;
+  const effective = animState.autoVibeEnabled ? dsp.vibe : VIBES[animState.lockedVibeIndex].id;
+  trackState.vibe = effective;
+  return effective;
 }
 
 export function applyVibeVisualBlend(vibe) {
+  trackState.vibe = vibe;
   const blendVars = { duration: 1.4, ease: 'power2.inOut' };
   for (let i = 0; i < VIBES.length; i++) {
     const id = VIBES[i].id;
     blendVars[id] = id === vibe ? 1 : 0;
   }
   gsapApi.to(animState.vibeBlends, blendVars);
+
+  gsapApi.to(animState, {
+    motionIntensity: getVibeTargetMotionIntensity(vibe),
+    duration: 1.3,
+    ease: 'power2.inOut',
+  });
 
   gsapApi.fromTo(
     animState.poster,
@@ -582,18 +658,19 @@ export function applyVibeVisualBlend(vibe) {
 
 export function triggerTrackTitleEntrance() {
   const { poster } = animState;
+  const calm = animState.motionIntensity < 0.45;
   gsapApi.killTweensOf(poster);
 
   gsapApi.fromTo(
     poster,
     {
-      line1Y: 26,
+      line1Y: calm ? 14 : 26,
       line1Alpha: 0,
-      line2Y: 36,
+      line2Y: calm ? 20 : 36,
       line2Alpha: 0,
-      artistY: 18,
+      artistY: calm ? 10 : 18,
       artistAlpha: 0,
-      scalePunch: 0.97,
+      scalePunch: calm ? 1 : 0.97,
       skewX: 0,
       ruleProgress: 0,
     },
@@ -607,8 +684,8 @@ export function triggerTrackTitleEntrance() {
       scalePunch: 1,
       skewX: 0,
       ruleProgress: 1,
-      duration: 0.95,
-      ease: 'power3.out',
+      duration: calm ? 1.15 : 0.9,
+      ease: calm ? 'power2.out' : 'power3.out',
     }
   );
 }

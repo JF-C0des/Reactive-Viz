@@ -14,6 +14,7 @@ import {
   animState,
   ripples,
   shapeBand,
+  getWaveAndRippleScale,
   getEffectiveVibe,
   applyVibeVisualBlend,
   triggerTrackTitleEntrance,
@@ -22,6 +23,7 @@ import {
   pollSpotifyCurrentlyPlaying,
   updateSpectralFallbackPalette,
 } from './spotify.js';
+import { updateLyricsPlaybackSync } from './lyrics.js';
 
 function calculateFrequencyBins(sampleRate, fftSize) {
   const nyquist = sampleRate / 2;
@@ -243,26 +245,40 @@ export function classifyCurrentAudioSnapshot() {
 function triggerExpressiveBeatReaction(strength, isKick) {
   const vibe = getEffectiveVibe();
   const dir = Math.random() > 0.5 ? 1 : -1;
-  const { fx, poster } = animState;
+  const { fx, poster, motionIntensity: mi } = animState;
+  const waveRippleScale = getWaveAndRippleScale(mi);
+  const isHighEnergy = vibe === 'EDM' || vibe === 'ANTHEM' || vibe === 'HIPHOP';
 
-  // Dynamic ambient light bloom pulsing on both kicks & snares
+  // Vibe-calibrated ambient light bloom: serene in SLOW/AMBIENT, sharp in EDM/ANTHEM
+  const bloomPeak = Math.min(
+    1,
+    strength * (isHighEnergy ? 1.08 : 0.42) * Math.min(1.25, waveRippleScale)
+  );
   gsapApi.fromTo(
     fx,
-    { ambientBloom: Math.min(1, strength * 0.95) },
-    { ambientBloom: 0, duration: 0.55, ease: 'power2.out', overwrite: 'auto' }
+    { ambientBloom: bloomPeak },
+    {
+      ambientBloom: 0,
+      duration: isHighEnergy ? 0.44 : 0.82,
+      ease: 'power2.out',
+      overwrite: 'auto',
+    }
   );
 
   if (isKick) {
-    const shakeAmp = vibe === 'EDM' || vibe === 'HIPHOP' ? 8.5 : vibe === 'ANTHEM' ? 5.0 : 2.6;
+    const baseShake =
+      vibe === 'EDM' || vibe === 'HIPHOP' ? 8.5 : vibe === 'ANTHEM' ? 5.2 : 0.6;
+    const shakeAmp = baseShake * (mi < 0.45 ? 0.15 : Math.min(1.2, mi));
 
     gsapApi.fromTo(
       fx,
       {
-        driverRecoil: strength * 0.95,
-        driverGlow: Math.min(1, strength * 1.15),
+        driverRecoil: strength * 0.95 * waveRippleScale,
+        driverGlow: Math.min(1, strength * (isHighEnergy ? 1.2 : 0.65) * waveRippleScale),
         shakeX: (Math.random() - 0.5) * 2 * shakeAmp * strength,
         shakeY: (Math.random() - 0.5) * 2 * shakeAmp * strength,
-        chromaSplit: strength * (vibe === 'EDM' || vibe === 'HIPHOP' ? 6.5 : 2.5),
+        chromaSplit:
+          mi < 0.6 ? 0 : strength * (vibe === 'EDM' || vibe === 'HIPHOP' ? 6.5 : 2.5),
       },
       {
         driverRecoil: 0,
@@ -270,8 +286,8 @@ function triggerExpressiveBeatReaction(strength, isKick) {
         shakeX: 0,
         shakeY: 0,
         chromaSplit: 0,
-        duration: vibe === 'EDM' ? 0.52 : 0.72,
-        ease: 'elastic.out(1.15, 0.4)',
+        duration: vibe === 'EDM' ? 0.48 : mi < 0.45 ? 0.92 : 0.68,
+        ease: mi < 0.45 ? 'power2.out' : 'elastic.out(1.15, 0.4)',
         overwrite: 'auto',
       }
     );
@@ -281,7 +297,10 @@ function triggerExpressiveBeatReaction(strength, isKick) {
       if (!sw.active) {
         gsapApi.killTweensOf(sw);
         sw.active = true;
-        const dur = vibe === 'EDM' || vibe === 'HIPHOP' ? 0.85 : 1.2;
+        const dur = vibe === 'EDM' || vibe === 'HIPHOP' ? 0.82 : mi < 0.45 ? 1.65 : 1.15;
+        // Soften ripple opacity by 60% in SLOW/AMBIENT via waveRippleScale (0.40 at mi=0.28)
+        const peakRippleAlpha =
+          Math.min(0.58, 0.2 + strength * 0.38) * waveRippleScale;
         gsapApi.fromTo(
           sw,
           { z: 1.0, radiusMult: 0.44 },
@@ -290,12 +309,14 @@ function triggerExpressiveBeatReaction(strength, isKick) {
             radiusMult: 1.44,
             duration: dur,
             ease: 'expo.out',
-            onComplete: () => { sw.active = false; },
+            onComplete: () => {
+              sw.active = false;
+            },
           }
         );
         gsapApi.fromTo(
           sw,
-          { alpha: Math.min(0.55, 0.2 + strength * 0.36) },
+          { alpha: peakRippleAlpha },
           { alpha: 0, duration: dur, ease: 'power2.out' }
         );
         break;
@@ -308,24 +329,25 @@ function triggerExpressiveBeatReaction(strength, isKick) {
     gsapApi.fromTo(
       fx,
       {
-        cubeScale: 1 + strength * 0.26,
-        edmFlash: Math.min(0.38, strength * 0.34),
-        glitchIntensity: strength > 0.5 ? strength * 0.85 : 0,
+        cubeScale: 1 + strength * 0.28,
+        edmFlash: Math.min(0.42, strength * 0.38),
+        glitchIntensity: strength > 0.48 ? strength * 0.88 : 0,
       },
       {
         cubeScale: 1,
         edmFlash: 0,
         glitchIntensity: 0,
-        duration: 0.46,
+        duration: 0.42,
         ease: 'expo.out',
         overwrite: 'auto',
       }
     );
   }
 
-  // Subtle readable beat scale/glow on Track Title
-  if (strength > 0.42) {
-    const maxScale = vibe === 'EDM' || vibe === 'HIPHOP' ? 0.055 : 0.032;
+  // Restrained, readable beat scale on Track Title (ultra-calm in SLOW/AMBIENT)
+  if (strength > 0.42 && mi > 0.35) {
+    const maxScale =
+      (vibe === 'EDM' || vibe === 'HIPHOP' ? 0.055 : 0.032) * Math.min(1.15, mi);
     gsapApi.fromTo(
       poster,
       {
@@ -346,6 +368,7 @@ function triggerExpressiveBeatReaction(strength, isKick) {
 export function updateAudioAndLifecycle(now) {
   if (trackState.connected) {
     pollSpotifyCurrentlyPlaying(false);
+    updateLyricsPlaybackSync(now);
   }
 
   if (dsp.isAudioActive && dsp.analyser) {
@@ -539,6 +562,14 @@ export function updateAudioAndLifecycle(now) {
   dsp.beatPulse *= 0.85;
 
   updateSpectralFallbackPalette(now);
+
+  // Vibe-calibrated Ken Burns speed: ultra-slow & serene in SLOW/AMBIENT, energetic on EDM/ANTHEM
+  const mi = animState.motionIntensity;
+  const kbSpeedScale = mi <= 0.35 ? 0.24 : mi < 0.7 ? 0.52 : mi * 0.98;
   animState.backdrop.kenBurnsPhase +=
-    0.0004 + dsp.smoothRms * 0.0016 + dsp.chorusIntensity * 0.0012;
+    (0.00042 +
+      dsp.smoothRms * 0.0015 +
+      dsp.chorusIntensity * 0.0012 +
+      (mi >= 1 ? dsp.beatPulse * 0.0014 : 0)) *
+    kbSpeedScale;
 }

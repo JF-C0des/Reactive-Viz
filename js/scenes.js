@@ -13,6 +13,7 @@ import {
   buffers,
   themePalette,
   trackState,
+  lyricsState,
   panel,
   dsp,
   animState,
@@ -22,8 +23,12 @@ import {
   truncateTextToWidth,
   wrapTitleTwoLines,
   getFormattedClock,
+  getParticleDensityScale,
+  getDriftSpeedScale,
+  getWaveAndRippleScale,
   getEffectiveVibe,
 } from './state.js';
+import { drawHolographicLyrics } from './lyrics.js';
 
 export function buildHalftonePattern() {
   const { halftoneCanvas, halftoneCtx } = buffers;
@@ -72,10 +77,16 @@ function drawProceduralAuroraBackdrop(now, alpha) {
   if (alpha <= 0.005) return;
 
   const { ctx } = dom;
-  const bgShiftX = animState.mouseX * CONFIG.PARALLAX_BG;
-  const bgShiftY = animState.mouseY * CONFIG.PARALLAX_BG;
+  const mi = animState.motionIntensity;
+  const driftScale = getDriftSpeedScale(mi);
+  const bgShiftX = animState.mouseX * CONFIG.PARALLAX_BG * (0.55 + Math.min(1, mi) * 0.45);
+  const bgShiftY = animState.mouseY * CONFIG.PARALLAX_BG * (0.55 + Math.min(1, mi) * 0.45);
   const { auroraNodes } = particles;
-  const velBoost = 1 + dsp.smoothRms * 0.85 + dsp.chorusIntensity * 0.9;
+  const velBoost =
+    driftScale *
+    (1 +
+      dsp.smoothRms * 0.7 * Math.min(1.2, mi) +
+      dsp.chorusIntensity * 0.85 * Math.min(1.3, mi));
 
   ctx.save();
   ctx.globalAlpha = alpha;
@@ -89,27 +100,28 @@ function drawProceduralAuroraBackdrop(now, alpha) {
 
   ctx.globalCompositeOperation = 'screen';
   const minDim = Math.min(panel.w, panel.h);
+  const waveScale = getWaveAndRippleScale(mi);
 
   for (let i = 0; i < auroraNodes.length; i++) {
     const node = auroraNodes[i];
     const nx =
       node.cx +
       Math.sin(now * node.freqX * velBoost + node.phaseX) * 0.25 +
-      Math.cos(now * node.freqY * 0.7 + i) * 0.08;
+      Math.cos(now * node.freqY * 0.7 * driftScale + i) * 0.08;
     const ny =
       node.cy +
       Math.cos(now * node.freqY * velBoost + node.phaseY) * 0.22 +
-      Math.sin(now * node.freqX * 0.8 + i) * 0.07;
+      Math.sin(now * node.freqX * 0.8 * driftScale + i) * 0.07;
 
     const ox = panel.x + nx * panel.w + bgShiftX * (0.6 + i * 0.15);
     const oy = panel.y + ny * panel.h + bgShiftY * (0.6 + i * 0.15);
 
     const bandMod =
-      node.colorRole === 0
+      (node.colorRole === 0
         ? dsp.smoothSub * 0.38
         : node.colorRole === 1
           ? dsp.smoothMid * 0.34
-          : dsp.smoothTreble * 0.34;
+          : dsp.smoothTreble * 0.34) * waveScale;
     const radius = minDim * (node.radiusRatio + bandMod);
 
     const rgb =
@@ -120,8 +132,7 @@ function drawProceduralAuroraBackdrop(now, alpha) {
           : themePalette.peakRgb;
     const coreAlpha =
       (node.colorRole === 2 ? 0.13 : 0.22) +
-      dsp.smoothSub * 0.1 +
-      dsp.smoothMid * 0.08;
+      (dsp.smoothSub * 0.1 + dsp.smoothMid * 0.08) * waveScale;
 
     const grad = ctx.createRadialGradient(ox, oy, 8, ox, oy, radius);
     grad.addColorStop(0, `rgba(${rgb}, ${Math.min(0.48, coreAlpha).toFixed(3)})`);
@@ -139,26 +150,36 @@ function drawProceduralAuroraBackdrop(now, alpha) {
 
 export function drawHybridBackdrop(now) {
   const { ctx } = dom;
-  const { backdrop, fx, mouseX, mouseY } = animState;
+  const { backdrop, fx, mouseX, mouseY, motionIntensity: mi } = animState;
   const albumVis = backdrop.albumVisibility;
+  const waveScale = getWaveAndRippleScale(mi);
+  const sereneFactor = mi <= 0.35 ? 0.42 : Math.min(1.15, mi);
 
   if (albumVis < 0.999 || !trackState.hasAlbumBackdrop) {
     drawProceduralAuroraBackdrop(now, 1);
   }
 
   if (albumVis > 0.005 && trackState.hasAlbumBackdrop) {
+    // Ultra-serene Ken Burns camera in SLOW/AMBIENT; punchy beat zoom in EDM/ANTHEM
     const breathZoom =
-      1.08 +
-      (0.5 + 0.5 * Math.sin(backdrop.kenBurnsPhase)) * 0.075 +
-      dsp.smoothSub * 0.042 +
-      dsp.kickPulse * 0.032;
+      1.06 +
+      (0.5 + 0.5 * Math.sin(backdrop.kenBurnsPhase)) * (0.075 * sereneFactor) +
+      (dsp.smoothSub * 0.042 + dsp.kickPulse * 0.034) * waveScale;
 
     const panX =
-      Math.sin(backdrop.kenBurnsPhase * 0.68) * panel.w * 0.028 * backdrop.kenBurnsDirX +
+      Math.sin(backdrop.kenBurnsPhase * 0.68) *
+        panel.w *
+        0.028 *
+        sereneFactor *
+        backdrop.kenBurnsDirX +
       mouseX * CONFIG.PARALLAX_BG +
       fx.shakeX;
     const panY =
-      Math.cos(backdrop.kenBurnsPhase * 0.54) * panel.h * 0.024 * backdrop.kenBurnsDirY +
+      Math.cos(backdrop.kenBurnsPhase * 0.54) *
+        panel.h *
+        0.024 *
+        sereneFactor *
+        backdrop.kenBurnsDirY +
       mouseY * CONFIG.PARALLAX_BG +
       fx.shakeY;
 
@@ -186,8 +207,10 @@ export function drawHybridBackdrop(now) {
     ctx.restore();
   }
 
-  // Dynamic Kick/Snare Ambient Light Bloom pulsing across the glass interior
-  const bloomIntensity = fx.ambientBloom * 0.22 + dsp.smoothMid * 0.09 + dsp.chorusIntensity * 0.1;
+  // Dynamic Kick/Snare Ambient Light Bloom: calm glow in SLOW/AMBIENT, sharp flash in EDM/ANTHEM
+  const bloomIntensity =
+    fx.ambientBloom * (mi >= 1 ? 0.28 : 0.14) +
+    (dsp.smoothMid * 0.08 + dsp.chorusIntensity * 0.11) * waveScale;
   if (bloomIntensity > 0.01) {
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
@@ -199,8 +222,8 @@ export function drawHybridBackdrop(now) {
       panel.cy,
       Math.max(panel.w, panel.h) * 0.65
     );
-    bloomGrad.addColorStop(0, `rgba(${themePalette.peakRgb}, ${(bloomIntensity * 0.65).toFixed(3)})`);
-    bloomGrad.addColorStop(0.45, `rgba(${themePalette.primaryRgb}, ${(bloomIntensity * 0.5).toFixed(3)})`);
+    bloomGrad.addColorStop(0, `rgba(${themePalette.peakRgb}, ${(bloomIntensity * 0.68).toFixed(3)})`);
+    bloomGrad.addColorStop(0.45, `rgba(${themePalette.primaryRgb}, ${(bloomIntensity * 0.52).toFixed(3)})`);
     bloomGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
     ctx.fillStyle = bloomGrad;
     ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
@@ -222,7 +245,8 @@ export function drawHybridBackdrop(now) {
 
 export function drawTransparentAcousticDrivers() {
   const { ctx } = dom;
-  const { fx, mouseX, mouseY } = animState;
+  const { fx, mouseX, mouseY, motionIntensity: mi } = animState;
+  const waveScale = getWaveAndRippleScale(mi); // 0.40 (-60%) in SLOW/AMBIENT, 1.0+ in EDM/ANTHEM/HIPHOP
   const sub = dsp.smoothSub;
   const mid = dsp.smoothMid;
   const recoil = fx.driverRecoil;
@@ -230,8 +254,8 @@ export function drawTransparentAcousticDrivers() {
   const bgX = mouseX * (CONFIG.PARALLAX_BG * 0.85) + fx.shakeX * 0.45;
   const bgY = mouseY * (CONFIG.PARALLAX_BG * 0.85) + fx.shakeY * 0.45;
 
-  const outerR = panel.driverRadius * (1 + sub * 0.075 + dsp.kickPulse * 0.045);
-  const piston = sub * 0.5 + recoil * 0.58;
+  const outerR = panel.driverRadius * (1 + (sub * 0.075 + dsp.kickPulse * 0.045) * waveScale);
+  const piston = (sub * 0.5 + recoil * 0.58) * waveScale;
   const drivers = [panel.leftDriverX, panel.rightDriverX];
 
   ctx.save();
@@ -246,7 +270,7 @@ export function drawTransparentAcousticDrivers() {
     const aura = ctx.createRadialGradient(throatX, throatY, 2, rimX, rimY, outerR * 1.24);
     aura.addColorStop(
       0,
-      `rgba(${themePalette.primaryRgb}, ${Math.min(0.55, 0.06 + sub * 0.3 + flash * 0.18).toFixed(3)})`
+      `rgba(${themePalette.primaryRgb}, ${Math.min(0.55, 0.05 + (sub * 0.3 + flash * 0.2) * waveScale).toFixed(3)})`
     );
     aura.addColorStop(1, 'rgba(0, 0, 0, 0)');
     ctx.fillStyle = aura;
@@ -265,15 +289,16 @@ export function drawTransparentAcousticDrivers() {
       ctx.lineWidth = c === 0 ? 1.35 : 0.95;
       ctx.strokeStyle =
         c === 4
-          ? `rgba(${themePalette.peakRgb}, ${Math.min(0.82, 0.12 + sub * 0.35 + flash * 0.25).toFixed(3)})`
-          : `rgba(${themePalette.secondaryRgb}, ${(0.05 + sub * 0.18).toFixed(3)})`;
+          ? `rgba(${themePalette.peakRgb}, ${Math.min(0.82, 0.1 + (sub * 0.35 + flash * 0.25) * waveScale).toFixed(3)})`
+          : `rgba(${themePalette.secondaryRgb}, ${(0.045 + sub * 0.18 * waveScale).toFixed(3)})`;
       ctx.stroke();
     }
 
     if (dsp.isAudioActive && dsp.timeData) {
       const segs = 64;
       const baseWaveR = outerR * 0.62;
-      const waveAmp = outerR * (0.06 + mid * 0.18 + sub * 0.14);
+      // Waveform amplitude softened by 60% in SLOW/AMBIENT via waveScale
+      const waveAmp = outerR * (0.06 + mid * 0.18 + sub * 0.14) * waveScale;
       ctx.beginPath();
       for (let s = 0; s <= segs; s++) {
         const idx = ((s % segs) * 16 + d * 256) % CONFIG.FFT_SIZE;
@@ -286,7 +311,7 @@ export function drawTransparentAcousticDrivers() {
         else ctx.lineTo(wx, wy);
       }
       ctx.lineWidth = 1.15;
-      ctx.strokeStyle = `rgba(${themePalette.peakRgb}, ${(0.16 + mid * 0.48).toFixed(3)})`;
+      ctx.strokeStyle = `rgba(${themePalette.peakRgb}, ${(0.12 + mid * 0.48 * waveScale).toFixed(3)})`;
       ctx.stroke();
     }
   }
@@ -322,7 +347,9 @@ export function drawTransparentAcousticDrivers() {
 
 function drawHarmonicSilkRibbons(now, blend, strands, baseAmpRatio, yOffsetRatio) {
   const { ctx } = dom;
-  const { mouseX, mouseY } = animState;
+  const { mouseX, mouseY, motionIntensity: mi } = animState;
+  const waveScale = getWaveAndRippleScale(mi); // Softens amplitude by 60% at mi=0.28
+  const driftScale = getDriftSpeedScale(mi);
   const mid = dsp.smoothMid;
   const sub = dsp.smoothSub;
   const chorus = dsp.chorusIntensity;
@@ -330,7 +357,11 @@ function drawHarmonicSilkRibbons(now, blend, strands, baseAmpRatio, yOffsetRatio
   const waveW = panel.w * 0.88;
   const startX = panel.cx - waveW * 0.5 + mouseX * CONFIG.PARALLAX_MID;
   const centerY = panel.cy + panel.h * yOffsetRatio + mouseY * CONFIG.PARALLAX_MID;
-  const amp = panel.h * baseAmpRatio * (0.45 + mid * 1.15 + sub * 0.45 + chorus * 0.35);
+  const amp =
+    panel.h *
+    baseAmpRatio *
+    (0.42 + mid * 1.15 + sub * 0.45 + chorus * 0.35) *
+    waveScale;
 
   const pts = 120;
   const stride = Math.floor(CONFIG.FFT_SIZE / pts);
@@ -346,7 +377,11 @@ function drawHarmonicSilkRibbons(now, blend, strands, baseAmpRatio, yOffsetRatio
           ? (dsp.timeData[(i * stride + s * 64) % CONFIG.FFT_SIZE] - 128) / 128
           : 0;
       const flow =
-        Math.sin(t * Math.PI * (3 + s) - now * (0.0024 + chorus * 0.0022) + s * 1.1) *
+        Math.sin(
+          t * Math.PI * (3 + s) -
+            now * (0.0022 + chorus * 0.0022) * driftScale +
+            s * 1.1
+        ) *
         (0.22 + mid * 0.42);
       const y = centerY + (raw * 0.72 + flow) * amp * win * (1 - ratio * 0.35);
       if (i === 0) ctx.moveTo(startX + t * waveW, y);
@@ -354,10 +389,11 @@ function drawHarmonicSilkRibbons(now, blend, strands, baseAmpRatio, yOffsetRatio
     }
 
     ctx.lineWidth = s === 0 ? 2.1 : 1.15;
+    const opacityMod = 0.55 + 0.45 * Math.min(1, waveScale);
     ctx.strokeStyle =
       s === 0
-        ? `rgba(${themePalette.peakRgb}, ${(0.82 * blend).toFixed(3)})`
-        : `rgba(${themePalette.primaryRgb}, ${((0.46 - ratio * 0.2) * blend).toFixed(3)})`;
+        ? `rgba(${themePalette.peakRgb}, ${(0.82 * blend * opacityMod).toFixed(3)})`
+        : `rgba(${themePalette.primaryRgb}, ${((0.46 - ratio * 0.2) * blend * opacityMod).toFixed(3)})`;
     ctx.stroke();
   }
 }
@@ -367,30 +403,37 @@ function drawAnthemScene(now, blend) {
   if (blend <= 0.01) return;
 
   const { ctx } = dom;
-  const { mouseX, mouseY } = animState;
+  const { mouseX, mouseY, motionIntensity: mi } = animState;
   const { godRays, dustMotes } = particles;
   const mid = dsp.smoothMid;
   const trb = dsp.smoothTreble;
   const chorus = dsp.chorusIntensity;
-  const velBoost = 1 + mid * 1.8 + chorus * 2.4 + dsp.beatPulse * 1.4;
+  const densityScale = getParticleDensityScale(mi);
+  const driftScale = getDriftSpeedScale(mi);
+  // Faster velocity bursts on transients in ANTHEM
+  const velBoost =
+    driftScale *
+    (1 + mid * 1.9 + chorus * 2.5 + dsp.beatPulse * 2.1 + dsp.snarePulse * 1.3);
 
   ctx.save();
   ctx.globalCompositeOperation = 'screen';
 
-  // 1. Volumetric Warm God-Rays fanning from upper canopy
+  // 1. Volumetric Warm God-Rays fanning from upper canopy (sharper beat-reactive lighting)
   for (let i = 0; i < godRays.length; i++) {
     const ray = godRays[i];
-    const sway = Math.sin(now * 0.0007 * (1 + chorus) + ray.phase) * 0.055;
+    const sway = Math.sin(now * 0.0007 * driftScale * (1 + chorus) + ray.phase) * 0.055;
     const topX = panel.x + (ray.originX + sway) * panel.w - mouseX * 10;
     const botX = topX + (ray.tilt + sway * 1.6) * panel.w;
     const halfTop = panel.w * ray.spread * 0.35;
-    const halfBot = panel.w * ray.spread * (1.35 + dsp.smoothSub * 0.4 + chorus * 0.35);
+    const halfBot = panel.w * ray.spread * (1.35 + dsp.smoothSub * 0.42 + chorus * 0.38);
 
     const rayAlpha =
-      ray.alpha * blend * (0.85 + mid * 1.5 + dsp.beatPulse * 0.9 + chorus * 0.8);
+      ray.alpha *
+      blend *
+      (0.85 + mid * 1.55 + dsp.beatPulse * 1.15 + dsp.snarePulse * 0.65 + chorus * 0.85);
     const grad = ctx.createLinearGradient(topX, panel.y, botX, panel.y + panel.h);
-    grad.addColorStop(0, `rgba(${themePalette.peakRgb}, ${Math.min(0.45, rayAlpha * 1.3).toFixed(3)})`);
-    grad.addColorStop(0.55, `rgba(${themePalette.primaryRgb}, ${Math.min(0.32, rayAlpha * 0.75).toFixed(3)})`);
+    grad.addColorStop(0, `rgba(${themePalette.peakRgb}, ${Math.min(0.48, rayAlpha * 1.35).toFixed(3)})`);
+    grad.addColorStop(0.55, `rgba(${themePalette.primaryRgb}, ${Math.min(0.34, rayAlpha * 0.78).toFixed(3)})`);
     grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
     ctx.fillStyle = grad;
@@ -406,11 +449,12 @@ function drawAnthemScene(now, blend) {
   // 2. Sweeping Harmonic Ribbons
   drawHarmonicSilkRibbons(now, blend, 3, 0.16, -0.02);
 
-  // 3. Rising Golden Dust Motes with Chorus Velocity Boost
-  for (let i = 0; i < dustMotes.length; i++) {
+  // 3. Full-Density Rising Golden Dust Motes with Transient Velocity Bursts
+  const activeMotes = Math.max(1, Math.round(dustMotes.length * densityScale));
+  for (let i = 0; i < activeMotes; i++) {
     const m = dustMotes[i];
-    m.y -= (0.00045 + trb * 0.0012) * velBoost * (1.25 - m.z * 0.5);
-    m.x += Math.sin(now * 0.0012 + m.phase) * 0.0003;
+    m.y -= (0.00046 + trb * 0.0013) * velBoost * (1.25 - m.z * 0.5);
+    m.x += Math.sin(now * 0.0012 * driftScale + m.phase) * 0.0003 * driftScale;
     if (m.y < -0.03) {
       m.y = 1.03;
       m.x = Math.random();
@@ -419,10 +463,16 @@ function drawAnthemScene(now, blend) {
     const px = panel.x + m.x * panel.w + mouseX * (1 - m.z) * 16;
     const py = panel.y + m.y * panel.h + mouseY * (1 - m.z) * 16;
     const twinkle = 0.65 + 0.35 * Math.sin(now * 0.005 + m.phase);
-    const alpha = Math.min(0.95, m.alpha * twinkle * blend * (0.5 + trb * 1.4 + chorus * 0.6));
-    const r = m.size * (1.35 - m.z * 0.5) * (1 + dsp.beatPulse * 0.35);
+    const alpha = Math.min(
+      0.95,
+      m.alpha * twinkle * blend * (0.52 + trb * 1.45 + chorus * 0.65 + dsp.beatPulse * 0.35)
+    );
+    const r = m.size * (1.35 - m.z * 0.5) * (1 + dsp.beatPulse * 0.4);
 
-    ctx.fillStyle = i % 2 === 0 ? `rgba(${themePalette.peakRgb}, ${alpha.toFixed(3)})` : `rgba(${themePalette.secondaryRgb}, ${alpha.toFixed(3)})`;
+    ctx.fillStyle =
+      i % 2 === 0
+        ? `rgba(${themePalette.peakRgb}, ${alpha.toFixed(3)})`
+        : `rgba(${themePalette.secondaryRgb}, ${alpha.toFixed(3)})`;
     ctx.beginPath();
     ctx.arc(px, py, r, 0, Math.PI * 2);
     ctx.fill();
@@ -492,7 +542,10 @@ function drawEdmScene(blend) {
     ctx.restore();
   }
 
-  const rotSpeed = (0.007 + mid * 0.026 + dsp.kickPulse * 0.026) * (1 + chorus * 0.75);
+  const rotSpeed =
+    (0.007 + mid * 0.028 + dsp.kickPulse * 0.034 + dsp.snarePulse * 0.02) *
+    (1 + chorus * 0.85) *
+    getDriftSpeedScale(animState.motionIntensity);
   fx.cubeRotX += rotSpeed * 0.74;
   fx.cubeRotY += rotSpeed * 1.08;
   fx.cubeRotZ += rotSpeed * 0.44;
@@ -611,34 +664,43 @@ function drawHiphopScene(now, blend) {
   ctx.restore();
 }
 
-// --- SCENE 4: 'SLOW' (Ballad / Sad / Rain — Trickling Raindrops & Sub-Bass City Bokeh) ---
+// --- SCENE 4: 'SLOW' (Ballad / Sad / Rain — Restrained 30% Particle Density & Half Drift Speed) ---
 function drawSlowScene(now, blend) {
   if (blend <= 0.01) return;
 
   const { ctx } = dom;
-  const { mouseX, mouseY } = animState;
+  const { mouseX, mouseY, motionIntensity: mi } = animState;
   const { bokehOrbs, raindrops } = particles;
   const sub = dsp.smoothSub;
   const mid = dsp.smoothMid;
-  const midShiftX = mouseX * CONFIG.PARALLAX_MID;
-  const midShiftY = mouseY * CONFIG.PARALLAX_MID;
+  const densityScale = getParticleDensityScale(mi); // 0.30 (30% of particles) in SLOW/AMBIENT
+  const driftScale = getDriftSpeedScale(mi);       // 0.50 (half drift speed) in SLOW/AMBIENT
+  const waveScale = getWaveAndRippleScale(mi);
+  const midShiftX = mouseX * CONFIG.PARALLAX_MID * 0.75;
+  const midShiftY = mouseY * CONFIG.PARALLAX_MID * 0.75;
+
+  const activeBokehCount = Math.max(1, Math.round(bokehOrbs.length * densityScale));
+  const activeRainCount = Math.max(1, Math.round(raindrops.length * densityScale));
 
   ctx.save();
   ctx.globalCompositeOperation = 'screen';
-  for (let i = 0; i < bokehOrbs.length; i++) {
+  for (let i = 0; i < activeBokehCount; i++) {
     const b = bokehOrbs[i];
-    b.x += b.vx * (1 + mid * 1.2);
-    b.y += b.vy * (1 + mid * 1.2);
+    b.x += b.vx * driftScale * (1 + mid * 0.65);
+    b.y += b.vy * driftScale * (1 + mid * 0.65);
     if (b.x < -0.1) b.x = 1.1;
     if (b.x > 1.1) b.x = -0.1;
     if (b.y < -0.1) b.y = 1.1;
     if (b.y > 1.1) b.y = -0.1;
 
-    const pulse = 1 + sub * 0.4 + dsp.kickPulse * 0.18 + 0.08 * Math.sin(now * 0.0016 + b.phase);
+    const pulse =
+      1 +
+      (sub * 0.34 + dsp.kickPulse * 0.14) * waveScale +
+      0.06 * Math.sin(now * 0.0011 + b.phase);
     const r = b.baseR * pulse;
-    const bx = panel.x + b.x * panel.w - mouseX * 10;
-    const by = panel.y + b.y * panel.h - mouseY * 10;
-    const alpha = Math.min(0.42, b.alpha * blend * (0.8 + sub * 1.65 + mid * 0.55));
+    const bx = panel.x + b.x * panel.w - mouseX * 8;
+    const by = panel.y + b.y * panel.h - mouseY * 8;
+    const alpha = Math.min(0.36, b.alpha * blend * (0.78 + (sub * 1.4 + mid * 0.45) * waveScale));
 
     const rgb =
       b.hueType === 0
@@ -659,22 +721,22 @@ function drawSlowScene(now, blend) {
   }
 
   ctx.globalCompositeOperation = 'source-over';
-  for (let i = 0; i < raindrops.length; i++) {
+  for (let i = 0; i < activeRainCount; i++) {
     const drop = raindrops[i];
     if (drop.pauseTimer > 0) {
-      drop.pauseTimer -= 1 + sub * 1.8;
-      drop.y += drop.speed * 0.13;
+      drop.pauseTimer -= (1 + sub * 1.1) * driftScale;
+      drop.y += drop.speed * 0.1 * driftScale;
     } else {
-      const speedMult = 1 + mid * 1.1 + sub * 0.8 + dsp.chorusIntensity * 0.8;
+      const speedMult = driftScale * (1 + (mid * 0.75 + sub * 0.55) * waveScale);
       drop.y += drop.speed * speedMult;
-      drop.x += Math.sin(now * 0.002 + drop.wobblePhase + drop.y * 18) * 0.00028;
-      if (Math.random() < 0.007) drop.pauseTimer = 20 + Math.random() * 55;
+      drop.x += Math.sin(now * 0.0014 + drop.wobblePhase + drop.y * 16) * 0.00018 * driftScale;
+      if (Math.random() < 0.006) drop.pauseTimer = 25 + Math.random() * 60;
     }
 
     if (drop.y - drop.trailLen > 1.04) {
       drop.y = -0.04 - Math.random() * 0.15;
       drop.x = 0.03 + Math.random() * 0.94;
-      drop.pauseTimer = Math.random() * 35;
+      drop.pauseTimer = Math.random() * 40;
     }
 
     const dx = panel.x + drop.x * panel.w + midShiftX * 0.7;
@@ -683,7 +745,7 @@ function drawSlowScene(now, blend) {
 
     const trailGrad = ctx.createLinearGradient(dx, dy - streakPixels, dx, dy);
     trailGrad.addColorStop(0, `rgba(${themePalette.peakRgb}, 0)`);
-    trailGrad.addColorStop(1, `rgba(${themePalette.peakRgb}, ${(0.26 * blend).toFixed(3)})`);
+    trailGrad.addColorStop(1, `rgba(${themePalette.peakRgb}, ${(0.24 * blend).toFixed(3)})`);
 
     ctx.beginPath();
     ctx.moveTo(dx, dy - streakPixels);
@@ -694,15 +756,15 @@ function drawSlowScene(now, blend) {
 
     ctx.beginPath();
     ctx.ellipse(dx, dy, drop.radius * 0.85, drop.radius * 1.22, 0, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(8, 8, 12, ${(0.46 * blend).toFixed(3)})`;
+    ctx.fillStyle = `rgba(8, 8, 12, ${(0.44 * blend).toFixed(3)})`;
     ctx.fill();
     ctx.lineWidth = 0.8;
-    ctx.strokeStyle = `rgba(${themePalette.secondaryRgb}, ${(0.46 * blend).toFixed(3)})`;
+    ctx.strokeStyle = `rgba(${themePalette.secondaryRgb}, ${(0.42 * blend).toFixed(3)})`;
     ctx.stroke();
 
     ctx.beginPath();
     ctx.arc(dx - drop.radius * 0.25, dy - drop.radius * 0.3, Math.max(0.7, drop.radius * 0.32), 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(${themePalette.peakRgb}, ${(0.8 * blend).toFixed(3)})`;
+    ctx.fillStyle = `rgba(${themePalette.peakRgb}, ${(0.76 * blend).toFixed(3)})`;
     ctx.fill();
   }
 
@@ -758,17 +820,19 @@ function drawAcousticScene(now, blend) {
   ctx.restore();
 }
 
-// --- SCENE 6: 'AMBIENT' (Lo-Fi / Instrumental / Chill — Aurora Ribbons & Slow Zen Orbital Rings) ---
+// --- SCENE 6: 'AMBIENT' (Lo-Fi / Instrumental / Chill — Serene Half-Speed Aurora & Zen Orbital Rings) ---
 function drawAmbientScene(now, blend) {
   if (blend <= 0.01) return;
 
   const { ctx } = dom;
-  const { fx, mouseX, mouseY } = animState;
+  const { fx, mouseX, mouseY, motionIntensity: mi } = animState;
+  const driftScale = getDriftSpeedScale(mi); // 0.50 half drift speed in AMBIENT
+  const waveScale = getWaveAndRippleScale(mi);
   const sub = dsp.smoothSub;
   const mid = dsp.smoothMid;
   const trb = dsp.smoothTreble;
 
-  fx.orbitPhase += 0.0022 + mid * 0.004 + dsp.chorusIntensity * 0.003;
+  fx.orbitPhase += (0.002 + mid * 0.003 * waveScale) * driftScale;
 
   ctx.save();
   ctx.globalCompositeOperation = 'screen';
@@ -778,10 +842,29 @@ function drawAmbientScene(now, blend) {
     drawProceduralAuroraBackdrop(now, blend * 0.32);
   }
 
-  // Slow Zen Gyroscopic Orbital Rings
+  // Slow Zen Gyroscopic Orbital Rings + Optional AmbientDust (30% density at half speed)
+  const { dustMotes } = particles;
+  const activeAmbientMotes = Math.max(1, Math.round(dustMotes.length * getParticleDensityScale(mi)));
+  for (let i = 0; i < activeAmbientMotes; i++) {
+    const m = dustMotes[i];
+    m.y -= 0.00024 * driftScale * (1.2 - m.z * 0.4);
+    m.x += Math.sin(now * 0.0007 * driftScale + m.phase) * 0.00018 * driftScale;
+    if (m.y < -0.03) {
+      m.y = 1.03;
+      m.x = Math.random();
+    }
+    const px = panel.x + m.x * panel.w + mouseX * (1 - m.z) * 10;
+    const py = panel.y + m.y * panel.h + mouseY * (1 - m.z) * 10;
+    const alpha = m.alpha * 0.34 * blend;
+    ctx.fillStyle = `rgba(${themePalette.peakRgb}, ${alpha.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(px, py, m.size * 0.85, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   const zenCx = panel.cx + panel.w * 0.22 + mouseX * CONFIG.PARALLAX_MID;
   const zenCy = panel.cy + panel.h * 0.01 + mouseY * CONFIG.PARALLAX_MID;
-  const baseR = Math.min(panel.w, panel.h) * (0.21 + sub * 0.06);
+  const baseR = Math.min(panel.w, panel.h) * (0.21 + sub * 0.05 * waveScale);
 
   for (let o = 0; o < 3; o++) {
     const r = baseR * (0.78 + o * 0.24);
@@ -791,7 +874,7 @@ function drawAmbientScene(now, blend) {
     ctx.beginPath();
     ctx.ellipse(zenCx, zenCy, r, r * tilt, rot, 0, Math.PI * 2);
     ctx.lineWidth = o === 0 ? 1.5 : 0.95;
-    ctx.strokeStyle = `rgba(${o === 0 ? themePalette.peakRgb : themePalette.secondaryRgb}, ${(blend * (0.28 + trb * 0.32)).toFixed(3)})`;
+    ctx.strokeStyle = `rgba(${o === 0 ? themePalette.peakRgb : themePalette.secondaryRgb}, ${(blend * (0.24 + trb * 0.28 * waveScale)).toFixed(3)})`;
     ctx.stroke();
   }
 
@@ -864,8 +947,13 @@ export function drawEditorialPosterAndCornerClock(now, alpha, drawAlbumCardCallb
   }
 
   // --- LOWER-LEFT EDITORIAL LIVE TRACK TITLE & ARTIST ---
+  const lyricsVisible = lyricsState.hasSynced && lyricsState.blockAlpha > 0.08;
   const leftMargin = panel.x + Math.max(48, panel.w * 0.06) + fgX;
-  const posterBaseY = panel.y + panel.h - Math.max(120, panel.h * 0.185) + fgY;
+  const posterBaseY =
+    panel.y +
+    panel.h -
+    Math.max(lyricsVisible ? 108 : 120, panel.h * (lyricsVisible ? 0.168 : 0.185)) +
+    fgY;
 
   // Reserve clean right-side clearance so long titles never collide with the Album Card
   const hasCardVisible = trackState.albumImg && panel.w >= 680;
@@ -885,17 +973,26 @@ export function drawEditorialPosterAndCornerClock(now, alpha, drawAlbumCardCallb
         ? `${effectiveVibe} ENGINE · SYSTEM AUDIO`
         : 'CONNECT SPOTIFY OR SYSTEM AUDIO';
 
-  // Adaptive headline font sizing based on title length
-  const baseScale = rawTitle.length > 26 ? 0.046 : rawTitle.length > 15 ? 0.058 : 0.07;
+  // Adaptive headline font sizing (leaves generous upper clearance when 3-line lyrics are visible)
+  const baseScale = rawTitle.length > 26 ? 0.044 : rawTitle.length > 15 ? 0.055 : 0.066;
+  const maxHeadlineCap = lyricsVisible ? 68 : 82;
   const headlinePx = Math.round(
-    Math.max(28, Math.min(panel.w * baseScale, panel.h * 0.13, 82))
+    Math.max(26, Math.min(panel.w * baseScale, panel.h * (lyricsVisible ? 0.108 : 0.13), maxHeadlineCap))
   );
 
   ctx.save();
   ctx.font = `700 ${headlinePx}px "Space Grotesk", sans-serif`;
   const wrappedLines = wrapTitleTwoLines(ctx, rawTitle, maxTitleWidth);
   const lineHeight = headlinePx * 1.02;
-  const ambientDriftY = Math.sin(now * 0.0014) * 3.5;
+  const waveScale = getWaveAndRippleScale(animState.motionIntensity);
+  const ambientDriftY = Math.sin(now * 0.0012) * (2.2 * Math.min(1, waveScale + 0.3));
+
+  // Render floating 3-line SonicGlass Holographic Lyrics window cleanly above the Track Title
+  const titleTopY =
+    posterBaseY -
+    28 -
+    (wrappedLines.length > 1 ? lineHeight + headlinePx * 0.95 : headlinePx * 0.95);
+  drawHolographicLyrics(alpha, titleTopY);
 
   ctx.translate(leftMargin, posterBaseY + ambientDriftY);
   if (poster.scalePunch !== 1 || poster.skewX !== 0) {
@@ -961,10 +1058,10 @@ export function drawEditorialPosterAndCornerClock(now, alpha, drawAlbumCardCallb
   drawSpacedArtistLine(ctx, truncatedArtist, 2, -2 + poster.artistY, 2.4);
   ctx.restore();
 
-  // Expressive 48-Bar Album-Tinted Spectrum Equalizer Strip
+  // Expressive 48-Bar Album-Tinted Spectrum Equalizer Strip (softened in SLOW/AMBIENT)
   const eqTotalW = Math.min(maxTitleWidth * 0.92, 420) * poster.ruleProgress;
   const eqBaseY = 28;
-  const maxBarH = 22;
+  const maxBarH = 22 * (0.45 + 0.55 * Math.min(1.15, waveScale));
   const stepX = eqTotalW / CONFIG.EQ_BAR_COUNT;
   const barW = Math.max(2, stepX * 0.62);
 
@@ -1006,7 +1103,12 @@ export function drawEditorialPosterAndCornerClock(now, alpha, drawAlbumCardCallb
     dsp.dominantHz > 25 ? `${dsp.dominantNote} (${Math.round(dsp.dominantHz)} HZ)` : 'STANDBY';
   const backdropSource =
     backdrop.albumVisibility > 0.5 ? 'ALBUM CANVAS' : 'AURORA MESH';
-  ctx.fillText(`${bpmText}  ·  ${hzText}  ·  ${effectiveVibe}  ·  ${backdropSource}`, 0, eqBaseY + 17);
+  const lrcTag = lyricsState.hasSynced ? '  ·  LRC SYNC' : '';
+  ctx.fillText(
+    `${bpmText}  ·  ${hzText}  ·  ${effectiveVibe}  ·  ${backdropSource}${lrcTag}`,
+    0,
+    eqBaseY + 17
+  );
 
   ctx.restore();
   ctx.restore();

@@ -22,6 +22,7 @@ import {
   roundedRectPath,
   chamferedRectPath,
   truncateTextToWidth,
+  getWaveAndRippleScale,
   getEffectiveVibe,
   applyVibeVisualBlend,
   triggerTrackTitleEntrance,
@@ -203,10 +204,11 @@ export function drawFramedGlassAlbumCard(modeAlpha) {
   const cardShiftY = mouseY * CONFIG.PARALLAX_CARD + fx.shakeY * 0.25;
 
   const enterScale = 0.88 + 0.12 * backdrop.cardEnterProgress;
+  const waveScale = getWaveAndRippleScale(animState.motionIntensity);
   const cardSize = Math.round(
     Math.min(panel.w * 0.215, panel.h * 0.37, 234) *
       enterScale *
-      (1 + dsp.smoothSub * 0.026 + dsp.kickPulse * 0.02)
+      (1 + (dsp.smoothSub * 0.026 + dsp.kickPulse * 0.02) * waveScale)
   );
   const cx = panel.cx + panel.w * 0.22 + cardShiftX;
   const cy = panel.cy + panel.h * 0.01 + cardShiftY;
@@ -220,15 +222,16 @@ export function drawFramedGlassAlbumCard(modeAlpha) {
   ctx.save();
   ctx.globalCompositeOperation = 'screen';
 
-  const auraRadius = outerHalf * (1.42 + dsp.smoothSub * 0.32 + dsp.beatPulse * 0.2);
+  const auraRadius =
+    outerHalf * (1.38 + (dsp.smoothSub * 0.34 + dsp.beatPulse * 0.22) * waveScale);
   const auraGrad = ctx.createRadialGradient(cx, cy, outerHalf * 0.65, cx, cy, auraRadius);
   auraGrad.addColorStop(
     0,
-    `rgba(${themePalette.primaryRgb}, ${(0.22 + dsp.smoothSub * 0.32 + dsp.beatPulse * 0.22).toFixed(3)})`
+    `rgba(${themePalette.primaryRgb}, ${(0.18 + (dsp.smoothSub * 0.32 + dsp.beatPulse * 0.24) * waveScale).toFixed(3)})`
   );
   auraGrad.addColorStop(
     0.55,
-    `rgba(${themePalette.secondaryRgb}, ${(0.09 + dsp.smoothMid * 0.18).toFixed(3)})`
+    `rgba(${themePalette.secondaryRgb}, ${(0.08 + dsp.smoothMid * 0.18 * waveScale).toFixed(3)})`
   );
   auraGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
   ctx.fillStyle = auraGrad;
@@ -236,10 +239,10 @@ export function drawFramedGlassAlbumCard(modeAlpha) {
   ctx.arc(cx, cy, auraRadius, 0, Math.PI * 2);
   ctx.fill();
 
-  // 64-spoke polar spectral halo radiating around the chamfered card perimeter
+  // 64-spoke polar spectral halo radiating around the chamfered card perimeter (vibe-calibrated)
   const bins = CONFIG.HALO_BINS;
   const innerHaloR = outerHalf * 1.06;
-  const maxSpike = outerHalf * (0.28 + dsp.chorusIntensity * 0.18);
+  const maxSpike = outerHalf * (0.28 + dsp.chorusIntensity * 0.18) * waveScale;
 
   ctx.lineWidth = 1.6;
   for (let i = 0; i < bins; i++) {
