@@ -1,0 +1,9 @@
+# Local secrets & runtime configuration
+config.js
+.env
+.env.*
+
+# Dependencies & OS metadata
+node_modules/
+.DS_Store
+Thumbs.db
